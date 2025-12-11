@@ -1,4 +1,4 @@
-.PHONY: proto proto-check clean build test run integration-test inspector
+.PHONY: proto proto-check clean build test run integration-test inspector setup setup-idalib
 
 # Protobuf generation
 proto:
@@ -45,7 +45,15 @@ install-tools:
 
 # Install Python dependencies
 install-python:
-	cd python && pip3 install -r requirements.txt -r requirements-test.txt
+	pip3 install -r python/requirements.txt
+
+# Setup idalib (required for IDA integration)
+setup-idalib:
+	@./scripts/setup_idalib.sh
+
+# Full setup: idalib + python deps + build
+setup: setup-idalib install-python build
+	@echo "Setup complete. Run: ./bin/ida-mcp-server"
 
 # Start MCP Inspector for testing
 inspector:

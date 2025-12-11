@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "proto"))
 try:
     import idapro
 except ImportError:
-    print("Error: idapro module not found. Run setup_idalib.sh first")
+    print("Error: idapro module not found. Run: ./scripts/setup_idalib.sh")
     sys.exit(1)
 
 from connect_server import ConnectServer

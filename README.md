@@ -59,10 +59,17 @@ Headless IDA Pro binary analysis via Model Context Protocol. Go orchestrates mul
 ```bash
 git clone <repo-url>
 cd ida-headless-mcp
+make setup
+```
 
-./scripts/setup_idalib.sh
-make install-tools
-make build
+This runs idalib setup, installs Python dependencies, and builds the server.
+
+For manual setup or troubleshooting:
+
+```bash
+./scripts/setup_idalib.sh   # Setup idalib (requires IDA Pro/Essential 9.x)
+make install-python         # Install Python dependencies
+make build                  # Build Go server
 ```
 
 ## Usage
