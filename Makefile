@@ -59,4 +59,4 @@ setup: setup-idalib install-python build
 inspector:
 	@./scripts/inspector.sh
 
-.DEFAULT_GOAL := build
+.DEFAULT_GOAL := setup
