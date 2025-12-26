@@ -71,7 +71,7 @@ func (r *Registry) Create(binaryPath string, timeout time.Duration) (*Session, e
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(r.sessions) >= r.maxSessions {
+	if r.maxSessions > 0 && len(r.sessions) >= r.maxSessions {
 		return nil, fmt.Errorf("max sessions (%d) reached", r.maxSessions)
 	}
 
@@ -96,7 +96,7 @@ func (r *Registry) Restore(meta Metadata) (*Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if len(r.sessions) >= r.maxSessions {
+	if r.maxSessions > 0 && len(r.sessions) >= r.maxSessions {
 		return nil, fmt.Errorf("max sessions (%d) reached", r.maxSessions)
 	}
 	if _, exists := r.sessions[meta.ID]; exists {

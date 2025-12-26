@@ -23,7 +23,7 @@ const (
 	DefaultPort              = 17300
 	defaultSessionTimeoutMin = 240 // 4 hours - long enough for extended RE work
 	defaultAutoSaveMin       = 5
-	defaultMaxSessions       = 10
+	defaultMaxSessions       = 0 // 0 = unlimited
 	defaultWorkerPath        = "python/worker/server.py"
 	defaultPageLimit         = 1000
 	maxPageLimit             = 10000
@@ -110,9 +110,7 @@ func ensureConfigDefaults(cfg *Config) {
 	if cfg.AutoSaveIntervalMin == 0 {
 		cfg.AutoSaveIntervalMin = defaultAutoSaveMin
 	}
-	if cfg.MaxConcurrentSession == 0 {
-		cfg.MaxConcurrentSession = defaultMaxSessions
-	}
+	// MaxConcurrentSession: 0 means unlimited, don't override
 	if cfg.PythonWorkerPath == "" {
 		cfg.PythonWorkerPath = defaultWorkerPath
 	}

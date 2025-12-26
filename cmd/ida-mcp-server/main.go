@@ -128,9 +128,9 @@ func main() {
 }
 
 func validateConfig(cfg *server.Config) error {
-	// Validate MaxConcurrentSession
-	if cfg.MaxConcurrentSession <= 0 {
-		return fmt.Errorf("max_concurrent_sessions must be positive, got %d (use a reasonable limit like 10)", cfg.MaxConcurrentSession)
+	// Validate MaxConcurrentSession (0 = unlimited, negative is invalid)
+	if cfg.MaxConcurrentSession < 0 {
+		return fmt.Errorf("max_concurrent_sessions must be non-negative, got %d (use 0 for unlimited)", cfg.MaxConcurrentSession)
 	}
 
 	// Validate PythonWorkerPath exists and is executable
