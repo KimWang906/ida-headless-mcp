@@ -2,9 +2,11 @@
 
 # Protobuf generation
 proto:
+	@command -v protoc >/dev/null 2>&1 || { echo "Error: protoc not found. Install protobuf (brew install protobuf on macOS)"; exit 1; }
 	PATH="$(shell go env GOPATH)/bin:$${PATH}" go generate ./proto/ida/worker/v1
 
 proto-check:
+	@command -v protoc >/dev/null 2>&1 || { echo "Error: protoc not found. Install protobuf (brew install protobuf on macOS)"; exit 1; }
 	PATH="$(shell go env GOPATH)/bin:$${PATH}" go generate ./proto/ida/worker/v1
 	git diff --exit-code proto ida python/worker/gen
 
