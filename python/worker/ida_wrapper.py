@@ -14,6 +14,8 @@ from pathlib import Path
 
 import idapro
 
+from errors import IDAError
+
 
 class IDAWrapper:
     """Wrapper around idalib with error handling"""
@@ -54,8 +56,11 @@ class IDAWrapper:
                 self.last_error = msg
                 return False
 
-            # Disable console messages
-            idapro.enable_console_messages(False)
+            # Disable console messages (API may not exist in older IDA builds)
+            if hasattr(idapro, 'enable_console_messages'):
+                idapro.enable_console_messages(False)
+            else:
+                logging.warning("idapro.enable_console_messages not available in this IDA version")
 
             # Open database with compression
             result = idapro.open_database(self.binary_path, auto_analyze, "-P+")
@@ -147,7 +152,8 @@ class IDAWrapper:
                 import ida_hexrays
                 self.ida_hexrays = ida_hexrays
                 self.has_decompiler = ida_hexrays.init_hexrays_plugin()
-            except:
+            except Exception as e:
+                logging.debug("Hex-Rays decompiler not available: %s", e)
                 self.has_decompiler = False
 
             self.db_open = True
@@ -174,8 +180,13 @@ class IDAWrapper:
             if not self.db_open:
                 return (False, 0, False)
 
-            # Check if database has unsaved changes
-            dirty = self.idaapi.is_database_flag(self.idaapi.DBFL_KILL)
+            # Check if database has unsaved changes (API may vary across versions)
+            dirty = False
+            if hasattr(self.idaapi, 'DBFL_KILL') and hasattr(self.idaapi, 'is_database_flag'):
+                try:
+                    dirty = self.idaapi.is_database_flag(self.idaapi.DBFL_KILL)
+                except Exception as e:
+                    logging.debug("Failed to check database dirty flag: %s", e)
 
             # Save database via idaapi (idapro.save_database unavailable in some builds)
             result = self.idaapi.save_database("", 0)
@@ -281,19 +292,19 @@ class IDAWrapper:
     def import_il2cpp(self, script_json: str, il2cpp_header: str, fields: list[str] | None = None) -> dict:
         """Import Il2CppDumper metadata into the current database."""
         if not self.db_open:
-            raise RuntimeError("IDA database is not open. Call OpenBinary first.")
+            raise IDAError.database_closed(operation="import_il2cpp")
         self.touch()
         start = time.time()
 
         if not script_json:
-            raise ValueError("script_json is required")
+            raise IDAError.invalid_input("script_json is required", operation="import_il2cpp")
         if not il2cpp_header:
-            raise ValueError("il2cpp header is required")
+            raise IDAError.invalid_input("il2cpp header is required", operation="import_il2cpp")
 
         try:
             metadata = json.loads(script_json)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Invalid script_json: {exc}") from exc
+            raise IDAError.invalid_input(f"Invalid script_json: {exc}", operation="import_il2cpp") from exc
 
         enabled = set(fields or [
             "Addresses",
@@ -305,12 +316,16 @@ class IDAWrapper:
 
         header_applied = False
         header_error = None
-        try:
-            parse_result = self.idaapi.parse_decls(il2cpp_header, 0)
-            header_applied = bool(parse_result)
-        except Exception as exc:
-            header_error = str(exc)
-            logging.warning("Failed to parse il2cpp.h declarations: %s", exc)
+        if hasattr(self.idaapi, 'parse_decls'):
+            try:
+                parse_result = self.idaapi.parse_decls(il2cpp_header, 0)
+                header_applied = bool(parse_result)
+            except Exception as exc:
+                header_error = str(exc)
+                logging.warning("Failed to parse il2cpp.h declarations: %s", exc)
+        else:
+            header_error = "idaapi.parse_decls not available in this IDA version"
+            logging.warning(header_error)
 
         image_base = self.idaapi.get_imagebase()
         stats = {
@@ -411,12 +426,12 @@ class IDAWrapper:
     def import_flutter(self, blutter_output_path: str) -> dict:
         """Import Blutter/Dart metadata into the current database."""
         if not self.db_open:
-            raise RuntimeError("IDA database is not open. Call OpenBinary first.")
+            raise IDAError.database_closed(operation="import_flutter")
         self.touch()
         start = time.time()
 
         if not blutter_output_path:
-            raise ValueError("blutter_output_path is required")
+            raise IDAError.invalid_input("blutter_output_path is required", operation="import_flutter")
 
         import os
         import re
@@ -424,14 +439,14 @@ class IDAWrapper:
         # Construct path to addNames.py script
         addnames_path = os.path.join(blutter_output_path, "ida_script", "addNames.py")
         if not os.path.exists(addnames_path):
-            raise ValueError(f"addNames.py not found at {addnames_path}")
+            raise IDAError.not_found(f"addNames.py script at {addnames_path}", operation="import_flutter")
 
         # Read the script
         try:
             with open(addnames_path, "r", encoding="utf-8") as f:
                 script_content = f.read()
         except Exception as exc:
-            raise ValueError(f"Failed to read addNames.py: {exc}") from exc
+            raise IDAError.internal(f"Failed to read addNames.py: {exc}", operation="import_flutter") from exc
 
         stats = {
             "functions_created": 0,
@@ -490,20 +505,20 @@ class IDAWrapper:
 
         # Validate inputs
         if size <= 0:
-            raise ValueError("Size must be positive")
+            raise IDAError.invalid_input("Size must be positive", operation="get_bytes")
         if size > 10 * 1024 * 1024:  # 10MB limit to prevent DoS
-            raise ValueError("Size too large (max 10MB)")
+            raise IDAError.invalid_input("Size too large (max 10MB)", operation="get_bytes")
 
         # Validate address is in a valid segment
         seg = self.ida_segment.getseg(address)
         if not seg:
-            raise ValueError(f"Address {hex(address)} not in valid segment")
+            raise IDAError.not_found("Segment", address, operation="get_bytes")
 
         try:
             data = bytes([self.ida_bytes.get_byte(address + i) for i in range(size)])
             return data
         except Exception as e:
-            raise Exception(f"Error reading bytes: {e}")
+            raise IDAError.internal(f"Error reading bytes: {e}", operation="get_bytes") from e
 
     def get_disasm(self, address: int) -> str:
         """Get disassembly at address"""
@@ -515,7 +530,7 @@ class IDAWrapper:
         self.touch()
         func = self.ida_funcs.get_func(address)
         if not func:
-            raise ValueError(f"No function at address {hex(address)}")
+            raise IDAError.not_found("Function", address, operation="get_function_disasm")
         lines = []
         for ea in self.idautils.FuncItems(func.start_ea):
             line = self.idc.generate_disasm_line(ea, 0) or ""
@@ -526,22 +541,21 @@ class IDAWrapper:
         """Get decompiled pseudocode"""
         self.touch()
         if not self.has_decompiler:
-            raise Exception("Decompiler not available (Hex-Rays not installed or not licensed)")
+            raise IDAError.decompiler_unavailable(operation="get_decompiled")
 
         func = self.ida_funcs.get_func(address)
         if not func:
-            raise Exception(f"No function at address {hex(address)}")
+            raise IDAError.not_found("Function", address, operation="get_decompiled")
 
         try:
             decompiler = self.ida_hexrays.decompile(func.start_ea)
             if not decompiler:
-                raise Exception("Failed to decompile function")
+                raise IDAError.internal("Failed to decompile function", operation="get_decompiled")
             return str(decompiler)
-        except Exception as e:
-            # Check for common Hex-Rays errors
-            if "HexRaysError" in str(type(e).__name__):
-                raise Exception(f"Decompilation failed: {e}")
+        except IDAError:
             raise
+        except Exception as e:
+            raise IDAError.internal(f"Decompilation failed: {e}", operation="get_decompiled") from e
 
     def get_function_name(self, address: int) -> str:
         """Get function name at address"""
@@ -673,7 +687,8 @@ class IDAWrapper:
         except (ImportError, AttributeError):
             try:
                 return self.idc.get_inf_attr(self.idc.INF_START_EA)
-            except:
+            except Exception as e:
+                logging.debug("Fallback to idaapi.cvar.inf.start_ea: %s", e)
                 return self.idaapi.cvar.inf.start_ea
 
     def get_strings(self, offset: int = 0, limit: int = 1000, regex: str = None, case_sensitive: bool = False) -> dict:
@@ -688,7 +703,7 @@ class IDAWrapper:
             try:
                 pattern = re.compile(regex, flags)
             except re.error as e:
-                raise ValueError(f"Invalid regex: {e}")
+                raise IDAError.invalid_input(f"Invalid regex: {e}", operation="get_strings") from e
 
         filtered = []
         for s in all_strings:
@@ -731,7 +746,7 @@ class IDAWrapper:
         insn = self.ida_ua.insn_t()
         length = self.ida_ua.decode_insn(insn, address)
         if length == 0:
-            raise Exception(f"Failed to decode instruction at {hex(address)}")
+            raise IDAError.not_found("Instruction", address, operation="get_instruction_length")
         return length
 
     # Annotation operations
@@ -774,23 +789,23 @@ class IDAWrapper:
         """Apply a C-style prototype to a function"""
         self.touch()
         if not prototype:
-            raise ValueError("prototype is required")
+            raise IDAError.invalid_input("prototype is required", operation="set_function_type")
         parse_decl = getattr(self.idc, "parse_decl", None)
         apply_type = getattr(self.idc, "apply_type", None)
         if not parse_decl or not apply_type:
-            raise RuntimeError("IDA does not expose parse_decl/apply_type in this environment")
+            raise IDAError.api_incompatible("parse_decl/apply_type", operation="set_function_type")
         try:
             decl = parse_decl(prototype, 0)
         except Exception as exc:
-            raise ValueError(f"failed to parse prototype: {exc}") from exc
+            raise IDAError.invalid_input(f"Failed to parse prototype: {exc}", operation="set_function_type") from exc
         if not decl:
-            raise ValueError("prototype parse returned empty result")
+            raise IDAError.invalid_input("Prototype parse returned empty result", operation="set_function_type")
         try:
             success = apply_type(address, decl, 1)
         except Exception as exc:
-            raise RuntimeError(f"failed to apply prototype: {exc}") from exc
+            raise IDAError.internal(f"Failed to apply prototype: {exc}", operation="set_function_type") from exc
         if not success:
-            raise RuntimeError("IDA apply_type returned failure")
+            raise IDAError.internal("IDA apply_type returned failure", operation="set_function_type")
         return True
 
     def delete_name(self, address: int) -> bool:
@@ -799,68 +814,68 @@ class IDAWrapper:
         # idc.del_name returns 1 on success, 0 on failure
         return self.idc.del_name(address) != 0
 
-    def _require_hexrays(self):
+    def _require_hexrays(self, operation: str = ""):
         if not self.has_decompiler or self.ida_hexrays is None:
-            raise RuntimeError("Decompiler not available (Hex-Rays not installed or licensed)")
+            raise IDAError.decompiler_unavailable(operation=operation)
 
-    def _resolve_lvar(self, cfunc, lvar_name: str):
+    def _resolve_lvar(self, cfunc, lvar_name: str, operation: str = ""):
         for lvar in cfunc.get_lvars():
             if lvar.name == lvar_name:
                 return lvar
-        raise ValueError(f"Local variable '{lvar_name}' not found")
+        raise IDAError.not_found(f"Local variable '{lvar_name}'", operation=operation)
 
     def set_lvar_type(self, func_ea: int, lvar_name: str, prototype: str) -> bool:
         """Apply a C-style type to a local variable."""
         self.touch()
-        self._require_hexrays()
+        self._require_hexrays(operation="set_lvar_type")
         if not prototype:
-            raise ValueError("Prototype must be provided")
+            raise IDAError.invalid_input("Prototype must be provided", operation="set_lvar_type")
         cfunc = self.ida_hexrays.decompile(func_ea)
         if not cfunc:
-            raise RuntimeError("Failed to decompile function")
-        target = self._resolve_lvar(cfunc, lvar_name)
+            raise IDAError.internal("Failed to decompile function", operation="set_lvar_type")
+        target = self._resolve_lvar(cfunc, lvar_name, operation="set_lvar_type")
         tinfo = self.ida_typeinf.tinfo_t()
         # parse_decl expects a full declaration like "__int64 var", so combine type with variable name
         full_decl = f"{prototype} {lvar_name};"
         if not self.ida_typeinf.parse_decl(tinfo, None, full_decl, self.ida_typeinf.PT_VAR):
-            raise ValueError(f"Failed to parse type declaration: {full_decl}")
+            raise IDAError.invalid_input(f"Failed to parse type declaration: {full_decl}", operation="set_lvar_type")
 
         # Use modify_user_lvar_info (headless-compatible API)
         lvar_info = self.ida_hexrays.lvar_saved_info_t()
         lvar_info.ll = target
         lvar_info.type = tinfo
         if not self.ida_hexrays.modify_user_lvar_info(func_ea, self.ida_hexrays.MLI_TYPE, lvar_info):
-            raise RuntimeError("Failed to modify local variable type")
+            raise IDAError.internal("Failed to modify local variable type", operation="set_lvar_type")
         return True
 
     def rename_lvar(self, func_ea: int, lvar_name: str, new_name: str) -> bool:
         """Rename a Hex-Rays local variable."""
         self.touch()
-        self._require_hexrays()
+        self._require_hexrays(operation="rename_lvar")
         if not new_name:
-            raise ValueError("New name must be provided")
+            raise IDAError.invalid_input("New name must be provided", operation="rename_lvar")
         cfunc = self.ida_hexrays.decompile(func_ea)
         if not cfunc:
-            raise RuntimeError("Failed to decompile function")
-        target = self._resolve_lvar(cfunc, lvar_name)
+            raise IDAError.internal("Failed to decompile function", operation="rename_lvar")
+        target = self._resolve_lvar(cfunc, lvar_name, operation="rename_lvar")
 
         # Use modify_user_lvar_info (headless-compatible API)
         lvar_info = self.ida_hexrays.lvar_saved_info_t()
         lvar_info.ll = target
         lvar_info.name = new_name
         if not self.ida_hexrays.modify_user_lvar_info(func_ea, self.ida_hexrays.MLI_NAME, lvar_info):
-            raise RuntimeError("Failed to rename local variable")
+            raise IDAError.internal("Failed to rename local variable", operation="rename_lvar")
         return True
 
     def set_decompiler_comment(self, func_ea: int, address: int, comment: str) -> bool:
         """Attach a Hex-Rays pseudocode comment."""
         self.touch()
-        self._require_hexrays()
+        self._require_hexrays(operation="set_decompiler_comment")
         if not comment:
-            raise ValueError("comment is required")
+            raise IDAError.invalid_input("comment is required", operation="set_decompiler_comment")
         cfunc = self.ida_hexrays.decompile(func_ea)
         if not cfunc:
-            raise RuntimeError("Failed to decompile function")
+            raise IDAError.internal("Failed to decompile function", operation="set_decompiler_comment")
 
         # Create treeloc_t for the address
         treeloc = self.ida_hexrays.treeloc_t()
@@ -885,6 +900,7 @@ class IDAWrapper:
             compiled = re.compile(regex, flags)
 
         globals_list = []
+        BADADDR = self.idaapi.BADADDR
         for seg_ea in self.idautils.Segments():
             seg = ida_segment.getseg(seg_ea)
             if not seg:
@@ -900,6 +916,8 @@ class IDAWrapper:
                     if name:
                         if compiled and not compiled.search(name):
                             ea = ida_bytes.next_not_tail(ea)
+                            if ea == BADADDR:
+                                break
                             continue
                         gtype = self.idc.get_type(ea) or ""
                         globals_list.append({
@@ -908,13 +926,15 @@ class IDAWrapper:
                             "type": gtype,
                         })
                 ea = ida_bytes.next_not_tail(ea)
+                if ea == BADADDR:
+                    break
         return globals_list
 
     def set_global_type(self, address: int, type_decl: str) -> bool:
         """Apply a type to a global variable."""
         self.touch()
         if not type_decl:
-            raise ValueError("type is required")
+            raise IDAError.invalid_input("type is required", operation="set_global_type")
 
         # Get the current name at this address
         name = self.ida_name.get_name(address)
@@ -925,16 +945,16 @@ class IDAWrapper:
         full_decl = f"{type_decl} {name};"
         tinfo = self.ida_typeinf.tinfo_t()
         if not self.ida_typeinf.parse_decl(tinfo, None, full_decl, self.ida_typeinf.PT_VAR):
-            raise ValueError(f"Failed to parse type: {full_decl}")
+            raise IDAError.invalid_input(f"Failed to parse type: {full_decl}", operation="set_global_type")
         if not self.ida_typeinf.apply_tinfo(address, tinfo, self.ida_typeinf.TINFO_DEFINITE):
-            raise RuntimeError("IDA rejected the type")
+            raise IDAError.internal("IDA rejected the type", operation="set_global_type")
         return True
 
     def rename_global(self, address: int, new_name: str) -> bool:
         """Rename global variable."""
         self.touch()
         if not new_name:
-            raise ValueError("new_name is required")
+            raise IDAError.invalid_input("new_name is required", operation="rename_global")
         return self.idc.set_name(address, new_name, self.idc.SN_NOWARN) != 0
 
     def data_read_string(self, address: int, max_length: int = 256) -> str:
@@ -958,7 +978,7 @@ class IDAWrapper:
         import ida_bytes
         value = ida_bytes.get_byte(address)
         if value is None:
-            raise ValueError("Invalid address")
+            raise IDAError.not_found("Byte", address, operation="data_read_byte")
         return value
 
     def find_binary(self, start: int, end: int, pattern: str, search_up: bool = False) -> list:
@@ -966,7 +986,7 @@ class IDAWrapper:
         self.touch()
         import ida_bytes
         if not pattern:
-            raise ValueError("pattern is required")
+            raise IDAError.invalid_input("pattern is required", operation="find_binary")
         if start == 0:
             start = self.idaapi.get_imagebase()
         if end == 0:
@@ -976,7 +996,7 @@ class IDAWrapper:
         compiled_pattern = ida_bytes.compiled_binpat_vec_t()
         encoding_error = ida_bytes.parse_binpat_str(compiled_pattern, start, pattern, 16)
         if encoding_error:
-            raise ValueError(f"Invalid binary pattern: {pattern}")
+            raise IDAError.invalid_input(f"Invalid binary pattern: {pattern}", operation="find_binary")
 
         ea = start
         results = []
@@ -999,7 +1019,7 @@ class IDAWrapper:
         self.touch()
         import ida_search
         if not text:
-            raise ValueError("text is required")
+            raise IDAError.invalid_input("text is required", operation="find_text")
         if start == 0:
             start = self.idaapi.get_imagebase()
         if end == 0:
@@ -1052,16 +1072,16 @@ class IDAWrapper:
         """Return structure metadata including members."""
         self.touch()
         if not name:
-            raise ValueError("name is required")
+            raise IDAError.invalid_input("name is required", operation="get_struct")
 
         # Find the structure by name in type ordinals
         tinfo = self.ida_typeinf.tinfo_t()
         ti = self.ida_typeinf.get_idati()
         if not tinfo.get_named_type(ti, name):
-            raise ValueError(f"Structure {name} not found")
+            raise IDAError.not_found(f"Structure '{name}'", operation="get_struct")
 
         if not (tinfo.is_struct() or tinfo.is_union()):
-            raise ValueError(f"{name} is not a structure or union")
+            raise IDAError.invalid_input(f"{name} is not a structure or union", operation="get_struct")
 
         # Get ordinal for this type (use as id)
         ordinal = tinfo.get_ordinal()
@@ -1117,16 +1137,16 @@ class IDAWrapper:
         """Return enumeration metadata including members."""
         self.touch()
         if not name:
-            raise ValueError("name is required")
+            raise IDAError.invalid_input("name is required", operation="get_enum")
 
         # Find the enum by name in type ordinals
         tinfo = self.ida_typeinf.tinfo_t()
         ti = self.ida_typeinf.get_idati()
         if not tinfo.get_named_type(ti, name):
-            raise ValueError(f"Enum {name} not found")
+            raise IDAError.not_found(f"Enum '{name}'", operation="get_enum")
 
         if not tinfo.is_enum():
-            raise ValueError(f"{name} is not an enumeration")
+            raise IDAError.invalid_input(f"{name} is not an enumeration", operation="get_enum")
 
         # Get ordinal for this type (use as id)
         ordinal = tinfo.get_ordinal()
@@ -1199,7 +1219,7 @@ class IDAWrapper:
         self.touch()
         func = self.ida_funcs.get_func(address)
         if not func:
-            raise ValueError(f"No function at address 0x{address:X}")
+            raise IDAError.not_found("Function", address, operation="get_function_info")
 
         # Get function bounds
         start_ea = func.start_ea
@@ -1250,8 +1270,8 @@ class IDAWrapper:
 
                     # Get number of arguments
                     num_args = tinfo.get_nargs()
-            except:
-                pass
+            except Exception as e:
+                logging.debug("Failed to get calling convention info at 0x%X: %s", address, e)
 
         return {
             "address": start_ea,

@@ -71,6 +71,10 @@ func main() {
 		logger.Fatalf("failed to initialize session store: %v", err)
 	}
 
+	// Clean up orphan sockets and processes from previous server instances
+	workers.CleanupOrphanSockets()
+	workers.CleanupOrphanProcesses()
+
 	srv := server.New(registry, workers, logger, sessionTimeout, cfg.Debug, store)
 
 	srv.RestoreSessions()

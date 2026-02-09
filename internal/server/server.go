@@ -21,9 +21,9 @@ import (
 
 const (
 	DefaultPort              = 17300
-	defaultSessionTimeoutMin = 240 // 4 hours - long enough for extended RE work
+	defaultSessionTimeoutMin = 60  // 60 minutes — prevents forgotten sessions from lingering
 	defaultAutoSaveMin       = 5
-	defaultMaxSessions       = 0 // 0 = unlimited
+	defaultMaxSessions       = 10  // cap concurrent sessions to prevent resource exhaustion
 	defaultWorkerPath        = "python/worker/server.py"
 	defaultPageLimit         = 1000
 	maxPageLimit             = 10000
@@ -160,6 +160,11 @@ func (s *Server) RegisterTools(mcpServer *mcp.Server) {
 		Name:        "list_sessions",
 		Description: "List active analysis sessions",
 	}, s.listSessions)
+
+	mcp.AddTool(mcpServer, &mcp.Tool{
+		Name:        "close_all_sessions",
+		Description: "Close all active analysis sessions",
+	}, s.closeAllSessions)
 
 	mcp.AddTool(mcpServer, &mcp.Tool{
 		Name:        "save_database",

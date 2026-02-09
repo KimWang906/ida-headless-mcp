@@ -65,13 +65,13 @@ func (s *Server) deleteSessionState(sessionID string) {
 
 // Watchdog cleans up expired sessions
 func (s *Server) Watchdog() {
-	ticker := time.NewTicker(1 * time.Minute)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
 		expired := s.registry.Expired()
 		for _, sess := range expired {
-			s.debugf("[Watchdog] Session %s expired, cleaning up", sess.ID)
+			s.logger.Printf("[Watchdog] Session %s expired, cleaning up", sess.ID)
 			s.workers.Stop(sess.ID)
 			s.registry.Delete(sess.ID)
 			s.deleteSessionState(sess.ID)
@@ -84,9 +84,10 @@ func (s *Server) Watchdog() {
 // MCP tool implementations for session management
 
 func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args OpenBinaryRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("open_binary", "", map[string]interface{}{"path": args.Path})
+	const op = "open_binary"
+	s.logToolInvocation(op, "", map[string]interface{}{"path": args.Path})
 	if existing, ok := s.registry.FindByBinaryPath(args.Path); ok {
-		s.recordProgress(existing.ID, "open_binary", "Session reused", 1, 1)
+		s.recordProgress(existing.ID, op, "Session reused", 1, 1)
 		result := map[string]interface{}{
 			"session_id":     existing.ID,
 			"binary_path":    existing.BinaryPath,
@@ -104,23 +105,23 @@ func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args 
 
 	sess, err := s.registry.Create(args.Path, s.sessionTimeout)
 	if err != nil {
-		return nil, s.logAndSanitizeError("open_binary session creation", err), nil
+		return s.handleToolError(internalError(op, err))
 	}
-	progress := s.progressReporter(ctx, req, sess.ID, "open_binary")
+	progress := s.progressReporter(ctx, req, sess.ID, op)
 	const totalSteps = 5.0
 	currentStep := 0.0
-	s.emitProgress(progress, sess.ID, "open_binary", "Session created", currentStep, totalSteps)
+	s.emitProgress(progress, sess.ID, op, "Session created", currentStep, totalSteps)
 	currentStep++
-	s.emitProgress(progress, sess.ID, "open_binary", "Starting Python worker", currentStep, totalSteps)
+	s.emitProgress(progress, sess.ID, op, "Starting Python worker", currentStep, totalSteps)
 
 	if err := s.workers.Start(ctx, sess, args.Path); err != nil {
 		s.registry.Delete(sess.ID)
 		s.deleteSessionCache(sess.ID)
 		s.clearProgress(sess.ID)
-		return nil, s.logAndSanitizeError("open_binary worker start", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	currentStep++
-	s.emitProgress(progress, sess.ID, "open_binary", "Connecting to worker", currentStep, totalSteps)
+	s.emitProgress(progress, sess.ID, op, "Connecting to worker", currentStep, totalSteps)
 
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
@@ -128,10 +129,10 @@ func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args 
 		s.registry.Delete(sess.ID)
 		s.deleteSessionCache(sess.ID)
 		s.clearProgress(sess.ID)
-		return nil, s.logAndSanitizeError("open_binary worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	currentStep++
-	s.emitProgress(progress, sess.ID, "open_binary", "Opening binary in IDA", currentStep, totalSteps)
+	s.emitProgress(progress, sess.ID, op, "Opening binary in IDA", currentStep, totalSteps)
 
 	resp, err := (*client.SessionCtrl).OpenBinary(ctx, connect.NewRequest(&pb.OpenBinaryRequest{
 		BinaryPath:  args.Path,
@@ -142,7 +143,7 @@ func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args 
 		s.registry.Delete(sess.ID)
 		s.deleteSessionCache(sess.ID)
 		s.clearProgress(sess.ID)
-		return nil, s.logAndSanitizeError("open_binary RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 
 	if !resp.Msg.Success {
@@ -150,7 +151,7 @@ func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args 
 		s.registry.Delete(sess.ID)
 		s.deleteSessionCache(sess.ID)
 		s.clearProgress(sess.ID)
-		return nil, s.logAndSanitizeError("open_binary IDA analysis", errors.New(resp.Msg.Error)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(resp.Msg.Error)))
 	}
 
 	var autoState string
@@ -186,14 +187,15 @@ func (s *Server) openBinary(ctx context.Context, req *mcp.CallToolRequest, args 
 }
 
 func (s *Server) closeBinary(ctx context.Context, req *mcp.CallToolRequest, args CloseBinaryRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("close_binary", args.SessionID, nil)
+	const op = "close_binary"
+	s.logToolInvocation(op, args.SessionID, nil)
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", args.SessionID), nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 
 	if err := s.workers.Stop(sess.ID); err != nil {
-		return nil, s.logAndSanitizeError("close_binary worker stop", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 
 	s.registry.Delete(sess.ID)
@@ -204,6 +206,33 @@ func (s *Server) closeBinary(ctx context.Context, req *mcp.CallToolRequest, args
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: `{"success": true}`},
+		},
+	}, nil, nil
+}
+
+func (s *Server) closeAllSessions(ctx context.Context, req *mcp.CallToolRequest, args ListSessionsRequest) (*mcp.CallToolResult, any, error) {
+	const op = "close_all_sessions"
+	s.logToolInvocation(op, "", nil)
+	sessions := s.registry.List()
+	closed := 0
+	var errs []string
+	for _, sess := range sessions {
+		if err := s.workers.Stop(sess.ID); err != nil {
+			errs = append(errs, fmt.Sprintf("session %s: %v", sess.ID, err))
+		}
+		s.registry.Delete(sess.ID)
+		s.deleteSessionState(sess.ID)
+		s.deleteSessionCache(sess.ID)
+		s.clearProgress(sess.ID)
+		closed++
+	}
+	result, _ := s.marshalJSON(map[string]any{
+		"closed": closed,
+		"errors": errs,
+	})
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: string(result)},
 		},
 	}, nil, nil
 }
@@ -236,21 +265,22 @@ func (s *Server) listSessions(ctx context.Context, req *mcp.CallToolRequest, arg
 }
 
 func (s *Server) saveDatabase(ctx context.Context, req *mcp.CallToolRequest, args SaveDatabaseRequest) (*mcp.CallToolResult, any, error) {
+	const op = "save_database"
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", args.SessionID), nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 
 	sess.Touch()
 
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("save_database worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 
 	resp, err := (*client.SessionCtrl).SaveDatabase(ctx, connect.NewRequest(&pb.SaveDatabaseRequest{}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("save_database RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 
 	result, _ := s.marshalJSON(map[string]interface{}{
@@ -267,15 +297,16 @@ func (s *Server) saveDatabase(ctx context.Context, req *mcp.CallToolRequest, arg
 }
 
 func (s *Server) getSessionProgress(ctx context.Context, req *mcp.CallToolRequest, args GetSessionProgressRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("get_session_progress", args.SessionID, nil)
+	const op = "get_session_progress"
+	s.logToolInvocation(op, args.SessionID, nil)
 
 	if args.SessionID == "" {
-		return nil, fmt.Errorf("session_id is required"), nil
+		return s.handleToolError(invalidInput(op, "session_id is required"))
 	}
 
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", args.SessionID), nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 
 	sess.Touch()
@@ -343,18 +374,19 @@ func (s *Server) getSessionProgress(ctx context.Context, req *mcp.CallToolReques
 }
 
 func (s *Server) runAutoAnalysis(ctx context.Context, req *mcp.CallToolRequest, args RunAutoAnalysisRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("run_auto_analysis", args.SessionID, nil)
+	const op = "run_auto_analysis"
+	s.logToolInvocation(op, args.SessionID, nil)
 
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", args.SessionID), nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 
 	sess.Touch()
 
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("run_auto_analysis worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 
 	progress := s.progressReporter(ctx, req, sess.ID, "auto_analysis")
@@ -406,11 +438,11 @@ loop:
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, s.logAndSanitizeError("run_auto_analysis", ctx.Err()), nil
+			return s.handleToolError(internalError(op, ctx.Err()))
 		case pr := <-planCh:
 			if pr.err != nil {
 				s.emitProgress(progress, sess.ID, "auto_analysis", fmt.Sprintf("plan_and_wait failed: %v", pr.err), 0, 0)
-				return nil, s.logAndSanitizeError("run_auto_analysis plan_and_wait", pr.err), nil
+				return s.handleToolError(idaOperationFailed(op, sess.ID, pr.err))
 			}
 			planResp = pr.resp
 			fetchInfo()
@@ -449,21 +481,22 @@ loop:
 }
 
 func (s *Server) watchAutoAnalysis(ctx context.Context, req *mcp.CallToolRequest, args WatchAutoAnalysisRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("watch_auto_analysis", args.SessionID, map[string]interface{}{
+	const op = "watch_auto_analysis"
+	s.logToolInvocation(op, args.SessionID, map[string]interface{}{
 		"interval_ms":  args.IntervalMs,
 		"timeout_secs": args.TimeoutSecs,
 	})
 
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return nil, fmt.Errorf("session not found: %s", args.SessionID), nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 
 	sess.Touch()
 
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("watch_auto_analysis worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 
 	interval := time.Duration(args.IntervalMs) * time.Millisecond
@@ -493,7 +526,7 @@ func (s *Server) watchAutoAnalysis(ctx context.Context, req *mcp.CallToolRequest
 	for {
 		infoResp, err := (*client.SessionCtrl).GetSessionInfo(watchCtx, connect.NewRequest(&pb.GetSessionInfoRequest{}))
 		if err != nil {
-			return nil, s.logAndSanitizeError("watch_auto_analysis GetSessionInfo", err), nil
+			return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 		}
 		info := infoResp.Msg
 		lastState = info.GetAutoState()

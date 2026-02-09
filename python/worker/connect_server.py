@@ -3,6 +3,7 @@ Connect RPC Server
 Implements SessionControl, AnalysisTools, and Healthcheck services
 """
 
+import json
 import logging
 import sys
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "gen"))
 
 from ida.worker.v1 import service_pb2 as pb
+from errors import IDAError, ErrorKind
 
 
 class ConnectServer:
@@ -35,7 +37,7 @@ class ConnectServer:
             return
         success, error = self._ensure_database_open(auto_analyze=False)
         if not success:
-            raise RuntimeError(error or "IDA database is not open. Call OpenBinary first.")
+            raise IDAError.database_closed(operation="require_open_database")
 
     def handle(self, method: str, path: str, data: bytes) -> bytes:
         """Handle Connect RPC request"""
@@ -46,7 +48,7 @@ class ConnectServer:
             # Path format: /idagrpc.v1.ServiceName/MethodName
             parts = path.split("/")
             if len(parts) < 3:
-                return self._error_response(400, "Invalid path")
+                return self._connect_error_response("invalid_argument", "Invalid path")
 
             service = parts[-2].split(".")[-1]  # Extract ServiceName
             rpc_method = parts[-1]
@@ -62,13 +64,25 @@ class ConnectServer:
             elif service == "Healthcheck":
                 response_pb = self._handle_healthcheck(rpc_method, proto_body)
             else:
-                return self._error_response(404, f"Unknown service: {service}")
+                return self._connect_error_response("not_found", f"Unknown service: {service}")
 
             return self._success_response(response_pb)
 
+        except IDAError as e:
+            logging.error(f"IDAError [{e.kind.value}] {e.operation}: {e.message}")
+            code_map = {
+                ErrorKind.DATABASE_CLOSED: "failed_precondition",
+                ErrorKind.NOT_FOUND: "not_found",
+                ErrorKind.INVALID_INPUT: "invalid_argument",
+                ErrorKind.DECOMPILER_UNAVAILABLE: "unimplemented",
+                ErrorKind.API_INCOMPATIBLE: "unimplemented",
+                ErrorKind.INTERNAL: "internal",
+            }
+            connect_code = code_map.get(e.kind, "internal")
+            return self._connect_error_response(connect_code, e.message, e.to_dict())
         except Exception as e:
-            logging.error(f"Error handling request: {e}", exc_info=True)
-            return self._error_response(500, str(e))
+            logging.error(f"Unexpected error handling request: {e}", exc_info=True)
+            return self._connect_error_response("internal", "Internal server error")
         finally:
             self.pending_requests -= 1
 
@@ -133,7 +147,7 @@ class ConnectServer:
             return resp
 
         else:
-            raise Exception(f"Unknown method: {method}")
+            raise IDAError.invalid_input(f"Unknown SessionControl method: {method}", operation="session_control")
 
     def _handle_analysis_tools(self, method: str, proto_body: bytes):
         """Handle AnalysisTools RPC - returns protobuf message"""
@@ -255,7 +269,7 @@ class ConnectServer:
                 script_path = req.script_path
                 header_path = req.il2cpp_path
                 if not script_path or not header_path:
-                    raise ValueError("script_path and il2cpp_path are required")
+                    raise IDAError.invalid_input("script_path and il2cpp_path are required", operation="import_il2cpp")
                 with open(script_path, "r", encoding="utf-8") as f:
                     script_json = f.read()
                 with open(header_path, "r", encoding="utf-8") as f:
@@ -279,7 +293,7 @@ class ConnectServer:
                 req.ParseFromString(proto_body)
                 blutter_output_path = req.blutter_output_path
                 if not blutter_output_path:
-                    raise ValueError("blutter_output_path is required")
+                    raise IDAError.invalid_input("blutter_output_path is required", operation="import_flutter")
                 result = self.ida.import_flutter(blutter_output_path)
                 resp = pb.ImportFlutterResponse()
                 resp.success = True
@@ -609,12 +623,13 @@ class ConnectServer:
                 return resp
 
             else:
-                raise Exception(f"Unknown method: {method}")
+                raise IDAError.invalid_input(f"Unknown AnalysisTools method: {method}", operation="analysis_tools")
 
-        except Exception as e:
-            # Return error in the appropriate response type
-            logging.error(f"Analysis tool error: {e}")
+        except IDAError:
             raise
+        except Exception as e:
+            logging.error(f"Unexpected analysis tool error: {e}", exc_info=True)
+            raise IDAError.internal(str(e), operation="analysis_tools") from e
 
     def _handle_healthcheck(self, method: str, proto_body: bytes):
         """Handle Healthcheck RPC - returns protobuf message"""
@@ -634,7 +649,7 @@ class ConnectServer:
             return resp
 
         else:
-            raise Exception(f"Unknown method: {method}")
+            raise IDAError.invalid_input(f"Unknown Healthcheck method: {method}", operation="healthcheck")
 
     def _extract_body(self, data: bytes) -> bytes:
         """Extract protobuf body from HTTP request"""
@@ -654,15 +669,32 @@ class ConnectServer:
         )
         return response
 
-    def _error_response(self, code: int, message: str) -> bytes:
-        """Build HTTP error response"""
-        # Use plain text for errors
-        body = message.encode()
-        status_line = f"HTTP/1.1 {code} Error\r\n".encode()
-        response = (
-            status_line +
-            b"Content-Type: text/plain\r\n"
-            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
-            b"\r\n" + body
+    def _connect_error_response(self, code: str, message: str, details: dict = None) -> bytes:
+        """Build Connect RPC-compliant JSON error response.
+
+        Args:
+            code: Connect error code (e.g. "not_found", "internal").
+            message: Human-readable error message.
+            details: Optional structured error details (IDAError.to_dict()).
+        """
+        error_body: dict = {"code": code, "message": message}
+        if details:
+            error_body["details"] = details
+        body = json.dumps(error_body).encode()
+
+        status_map = {
+            "not_found": 404,
+            "invalid_argument": 400,
+            "failed_precondition": 400,
+            "unimplemented": 501,
+            "internal": 500,
+            "unavailable": 503,
+        }
+        http_code = status_map.get(code, 500)
+
+        return (
+            f"HTTP/1.1 {http_code} Error\r\n".encode()
+            + b"Content-Type: application/json\r\n"
+            + b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            + b"\r\n" + body
         )
-        return response

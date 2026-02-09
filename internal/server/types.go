@@ -2,41 +2,32 @@ package server
 
 import (
 	"context"
-
 	"errors"
-	"fmt"
 	"strings"
-
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	pb "github.com/zboralski/ida-headless-mcp/ida/worker/v1"
 )
 
-
-
-
-
-
-
-
 func (s *Server) getGlobals(ctx context.Context, req *mcp.CallToolRequest, args GetGlobalsRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("get_globals", args.SessionID, map[string]any{"regex": args.Regex})
+	const op = "get_globals"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"regex": args.Regex})
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_globals worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).GetGlobals(ctx, connect.NewRequest(&pb.GetGlobalsRequest{Regex: args.Regex, CaseSensitive: args.CaseSensitive}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_globals RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("get_globals IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	items := make([]map[string]any, 0, len(resp.Msg.GetGlobals()))
 	for _, g := range resp.Msg.GetGlobals() {
@@ -54,28 +45,29 @@ func (s *Server) getGlobals(ctx context.Context, req *mcp.CallToolRequest, args 
 }
 
 func (s *Server) listStructs(ctx context.Context, req *mcp.CallToolRequest, args ListStructsRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("list_structs", args.SessionID, map[string]any{"regex": args.Regex})
+	const op = "list_structs"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"regex": args.Regex})
 	if strings.TrimSpace(args.SessionID) == "" {
-		return nil, errors.New("session_id is required"), nil
+		return s.handleToolError(invalidInput(op, "session_id is required"))
 	}
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("list_structs worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).ListStructs(ctx, connect.NewRequest(&pb.ListStructsRequest{
 		Regex:         args.Regex,
 		CaseSensitive: args.CaseSensitive,
 	}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("list_structs RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("list_structs IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	items := make([]map[string]any, 0, len(resp.Msg.GetStructs()))
 	for _, st := range resp.Msg.GetStructs() {
@@ -93,25 +85,26 @@ func (s *Server) listStructs(ctx context.Context, req *mcp.CallToolRequest, args
 }
 
 func (s *Server) getStruct(ctx context.Context, req *mcp.CallToolRequest, args GetStructRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("get_struct", args.SessionID, map[string]any{"name": args.Name})
+	const op = "get_struct"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"name": args.Name})
 	if strings.TrimSpace(args.Name) == "" {
-		return nil, errors.New("name is required"), nil
+		return s.handleToolError(invalidInput(op, "name is required"))
 	}
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_struct worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).GetStruct(ctx, connect.NewRequest(&pb.GetStructRequest{Name: args.Name}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_struct RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("get_struct IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	members := make([]map[string]any, 0, len(resp.Msg.GetMembers()))
 	for _, m := range resp.Msg.GetMembers() {
@@ -132,22 +125,23 @@ func (s *Server) getStruct(ctx context.Context, req *mcp.CallToolRequest, args G
 }
 
 func (s *Server) listEnums(ctx context.Context, req *mcp.CallToolRequest, args ListEnumsRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("list_enums", args.SessionID, map[string]any{"regex": args.Regex})
+	const op = "list_enums"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"regex": args.Regex})
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("list_enums worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).ListEnums(ctx, connect.NewRequest(&pb.ListEnumsRequest{Regex: args.Regex, CaseSensitive: args.CaseSensitive}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("list_enums RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("list_enums IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	enums := make([]map[string]any, 0, len(resp.Msg.GetEnums()))
 	for _, e := range resp.Msg.GetEnums() {
@@ -164,25 +158,26 @@ func (s *Server) listEnums(ctx context.Context, req *mcp.CallToolRequest, args L
 }
 
 func (s *Server) getEnum(ctx context.Context, req *mcp.CallToolRequest, args GetEnumRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("get_enum", args.SessionID, map[string]any{"name": args.Name})
+	const op = "get_enum"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"name": args.Name})
 	if strings.TrimSpace(args.Name) == "" {
-		return nil, errors.New("name is required"), nil
+		return s.handleToolError(invalidInput(op, "name is required"))
 	}
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_enum worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).GetEnum(ctx, connect.NewRequest(&pb.GetEnumRequest{Name: args.Name}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_enum RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("get_enum IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	members := make([]map[string]any, 0, len(resp.Msg.GetMembers()))
 	for _, m := range resp.Msg.GetMembers() {
@@ -200,22 +195,23 @@ func (s *Server) getEnum(ctx context.Context, req *mcp.CallToolRequest, args Get
 }
 
 func (s *Server) getTypeAt(ctx context.Context, req *mcp.CallToolRequest, args GetTypeAtRequest) (*mcp.CallToolResult, any, error) {
-	s.logToolInvocation("get_type_at", args.SessionID, map[string]any{"address": args.Address})
+	const op = "get_type_at"
+	s.logToolInvocation(op, args.SessionID, map[string]any{"address": args.Address})
 	sess, ok := s.registry.Get(args.SessionID)
 	if !ok {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("Session not found: %s", args.SessionID)}}}, nil, nil
+		return s.handleToolError(sessionNotFound(op, args.SessionID))
 	}
 	sess.Touch()
 	client, err := s.workers.GetClient(sess.ID)
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_type_at worker client", err), nil
+		return s.handleToolError(workerUnavailable(op, sess.ID, err))
 	}
 	resp, err := (*client.Analysis).GetTypeAt(ctx, connect.NewRequest(&pb.GetTypeAtRequest{Address: args.Address}))
 	if err != nil {
-		return nil, s.logAndSanitizeError("get_type_at RPC call", err), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, err))
 	}
 	if msgErr := resp.Msg.GetError(); msgErr != "" {
-		return nil, s.logAndSanitizeError("get_type_at IDA operation", errors.New(msgErr)), nil
+		return s.handleToolError(idaOperationFailed(op, sess.ID, errors.New(msgErr)))
 	}
 	body, _ := s.marshalJSON(map[string]any{
 		"address":   resp.Msg.GetAddress(),

@@ -916,6 +916,9 @@ func (f *fakeWorkerManager) GetClient(sessionID string) (*worker.WorkerClient, e
 	return fake.client, nil
 }
 
+func (f *fakeWorkerManager) CleanupOrphanSockets() int    { return 0 }
+func (f *fakeWorkerManager) CleanupOrphanProcesses() int  { return 0 }
+
 func (f *fakeWorkerManager) StartCount(binaryPath string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
