@@ -7,9 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
+	"runtime"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -101,7 +100,7 @@ func main() {
 	logger.Printf("SSE transport at http://localhost:%d/sse", cfg.Port)
 
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	notifyShutdown(sigChan) // platform-specific: SIGINT+SIGTERM on Unix, SIGINT on Windows
 
 	go func() {
 		<-sigChan
@@ -132,36 +131,32 @@ func main() {
 }
 
 func validateConfig(cfg *server.Config) error {
-	// Validate MaxConcurrentSession (0 = unlimited, negative is invalid)
 	if cfg.MaxConcurrentSession < 0 {
 		return fmt.Errorf("max_concurrent_sessions must be non-negative, got %d (use 0 for unlimited)", cfg.MaxConcurrentSession)
 	}
 
-	// Validate PythonWorkerPath exists and is executable
 	if cfg.PythonWorkerPath == "" {
 		return fmt.Errorf("python_worker_path is required")
 	}
 
-	// Make path absolute for clarity in error messages
 	absPath, err := filepath.Abs(cfg.PythonWorkerPath)
 	if err != nil {
 		return fmt.Errorf("invalid python_worker_path %q: %w", cfg.PythonWorkerPath, err)
 	}
 	cfg.PythonWorkerPath = absPath
 
-	// Check file exists
 	info, err := os.Stat(cfg.PythonWorkerPath)
 	if err != nil {
 		return fmt.Errorf("python_worker_path %q not found: %w", cfg.PythonWorkerPath, err)
 	}
 
-	// Check it's a file, not a directory
 	if info.IsDir() {
 		return fmt.Errorf("python_worker_path %q is a directory, expected a Python script", cfg.PythonWorkerPath)
 	}
 
-	// Check it's executable (Unix-like systems)
-	if info.Mode()&0111 == 0 {
+	// On Unix/macOS, verify the script is executable.
+	// Windows uses file associations and the Python launcher instead of permission bits.
+	if runtime.GOOS != "windows" && info.Mode()&0111 == 0 {
 		return fmt.Errorf("python_worker_path %q is not executable (try: chmod +x %s)", cfg.PythonWorkerPath, cfg.PythonWorkerPath)
 	}
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
 Python Connect RPC Worker for IDA Headless Analysis
-Serves Connect RPC over Unix domain socket
+
+IPC transport is chosen automatically based on the arguments:
+  --socket PATH   Unix domain socket (Linux / macOS)
+  --port  PORT    TCP loopback on 127.0.0.1 (Windows, or when explicitly requested)
 """
 
 import argparse
@@ -9,7 +12,6 @@ import logging
 import os
 import socket
 import sys
-import time
 from pathlib import Path
 
 # Add proto path for imports
@@ -24,43 +26,47 @@ except ImportError:
 from connect_server import ConnectServer
 from ida_wrapper import IDAWrapper
 
-def serve_on_unix_socket(socket_path: str, handler, session_id: str):
-    """Serve Connect RPC over Unix domain socket"""
 
-    # Remove existing socket
-    if os.path.exists(socket_path):
-        os.remove(socket_path)
-
-    # Create Unix socket
-    server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server_socket.bind(socket_path)
-    server_socket.listen(5)
-
-    logging.info(f"[Worker {session_id}] Listening on {socket_path}")
-
+def serve(server_socket: socket.socket, handler, session_id: str, label: str):
+    """Accept connections on *server_socket* and dispatch each one to *handler*."""
+    logging.info(f"[Worker {session_id}] Listening on {label}")
     try:
         while True:
             conn, _ = server_socket.accept()
-            # Handle HTTP/1.1 request over socket
             handle_connection(conn, handler)
     finally:
         server_socket.close()
-        if os.path.exists(socket_path):
-            os.remove(socket_path)
+
+
+def make_unix_socket(path: str) -> socket.socket:
+    """Create and bind a Unix domain socket at *path*."""
+    if os.path.exists(path):
+        os.remove(path)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.bind(path)
+    sock.listen(5)
+    return sock
+
+
+def make_tcp_socket(port: int) -> socket.socket:
+    """Create and bind a TCP loopback socket on *port*."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+    sock.listen(5)
+    return sock
+
 
 def handle_connection(conn: socket.socket, handler):
-    """Handle single HTTP connection"""
+    """Handle a single HTTP/1.1 request arriving on *conn*."""
     try:
-        # Read HTTP request
         request_data = b""
         while True:
             chunk = conn.recv(4096)
             if not chunk:
                 break
             request_data += chunk
-            # Simple check for end of headers
             if b"\r\n\r\n" in request_data:
-                # Check Content-Length to read body
                 headers = request_data.split(b"\r\n\r\n")[0]
                 if b"Content-Length:" in headers:
                     for line in headers.split(b"\r\n"):
@@ -69,7 +75,6 @@ def handle_connection(conn: socket.socket, handler):
                             body_start = request_data.find(b"\r\n\r\n") + 4
                             body_received = len(request_data) - body_start
                             if body_received < content_length:
-                                # Read remaining body
                                 remaining = content_length - body_received
                                 request_data += conn.recv(remaining)
                 break
@@ -77,15 +82,10 @@ def handle_connection(conn: socket.socket, handler):
         if not request_data:
             return
 
-        # Parse HTTP request (simplified)
         lines = request_data.split(b"\r\n")
-        request_line = lines[0].decode('utf-8')
+        request_line = lines[0].decode("utf-8")
         method, path, _ = request_line.split()
-
-        # Route to handler
         response = handler(method, path, request_data)
-
-        # Send HTTP response
         conn.sendall(response.encode() if isinstance(response, str) else response)
 
     except Exception as e:
@@ -96,7 +96,11 @@ def handle_connection(conn: socket.socket, handler):
 
 def main():
     parser = argparse.ArgumentParser(description="IDA Connect Worker")
-    parser.add_argument("--socket", required=True, help="Unix socket path")
+    # IPC transport — exactly one of --socket or --port must be provided
+    transport = parser.add_mutually_exclusive_group(required=True)
+    transport.add_argument("--socket", help="Unix domain socket path (Linux/macOS)")
+    transport.add_argument("--port", type=int, help="TCP loopback port (Windows)")
+
     parser.add_argument("--binary", required=True, help="Binary file path")
     parser.add_argument("--session-id", required=True, help="Session ID")
     parser.add_argument("--log-level", default="INFO", help="Log level")
@@ -104,24 +108,32 @@ def main():
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
-        format=f'[Worker {args.session_id}] %(asctime)s - %(levelname)s - %(message)s'
+        format=f"[Worker {args.session_id}] %(asctime)s - %(levelname)s - %(message)s",
     )
 
     logging.info(f"Starting worker for binary: {args.binary}")
     logging.info("Initializing Connect server (IDA database will open on demand)")
 
-    # Initialize IDA wrapper (database opens when OpenBinary is called)
     ida = IDAWrapper(args.binary, args.session_id)
-
-    # Create Connect server
     server = ConnectServer(ida)
 
-    # Simple HTTP handler
     def handle_request(method: str, path: str, data: bytes) -> bytes:
         return server.handle(method, path, data)
 
     try:
-        serve_on_unix_socket(args.socket, handle_request, args.session_id)
+        if args.socket:
+            sock = make_unix_socket(args.socket)
+            label = args.socket
+        else:
+            sock = make_tcp_socket(args.port)
+            label = f"127.0.0.1:{args.port}"
+
+        serve(sock, handle_request, args.session_id, label)
+
+        # Cleanup Unix socket file on exit
+        if args.socket and os.path.exists(args.socket):
+            os.remove(args.socket)
+
     except KeyboardInterrupt:
         logging.info("Shutting down...")
     finally:

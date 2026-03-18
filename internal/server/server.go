@@ -66,13 +66,18 @@ func New(registry *session.Registry, workers worker.Controller, logger *log.Logg
 }
 
 func GetDefaultDBDir() string {
+	// Linux/macOS: honour XDG_DATA_HOME first, then ~/.local/share
 	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
 		return filepath.Join(xdgData, "ida-mcp", "sessions")
 	}
 	if home := os.Getenv("HOME"); home != "" {
 		return filepath.Join(home, ".local", "share", "ida-mcp", "sessions")
 	}
-	return "/tmp/ida_sessions"
+	// Windows: use %APPDATA% (e.g. C:\Users\<user>\AppData\Roaming)
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		return filepath.Join(appData, "ida-mcp", "sessions")
+	}
+	return filepath.Join(os.TempDir(), "ida_sessions")
 }
 
 func LoadConfig(path string) (Config, error) {
