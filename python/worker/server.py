@@ -18,9 +18,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "proto"))
 
 try:
-    import idapro
+    import ida as idapro  # IDA Pro 9.0 idalib: package is 'ida', alias as 'idapro' for compat
 except ImportError:
-    print("Error: idapro module not found. Run: ./scripts/setup_idalib.sh")
+    print("Error: ida (idalib) module not found. Run py-activate-idalib.py from your IDA Pro installation.")
     sys.exit(1)
 
 from connect_server import ConnectServer

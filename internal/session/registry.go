@@ -83,7 +83,6 @@ func (r *Registry) Create(binaryPath string, timeout time.Duration) (*Session, e
 		CreatedAt:    time.Now(),
 		LastActivity: time.Now(),
 		Timeout:      timeout,
-		SocketPath:   fmt.Sprintf("/tmp/ida-worker-%s.sock", uuid.New().String()[:8]),
 	}
 
 	r.sessions[session.ID] = session
@@ -110,7 +109,6 @@ func (r *Registry) Restore(meta Metadata) (*Session, error) {
 		CreatedAt:    meta.CreatedAt,
 		LastActivity: meta.LastActivity,
 		Timeout:      meta.Timeout,
-		SocketPath:   fmt.Sprintf("/tmp/ida-worker-%s.sock", uuid.New().String()[:8]),
 	}
 	r.sessions[session.ID] = session
 	r.binaryIndex[normPath] = session

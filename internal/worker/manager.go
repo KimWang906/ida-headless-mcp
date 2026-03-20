@@ -71,12 +71,14 @@ func findPython() string {
 // Start spawns a Python worker for the session.
 // The IPC transport (Unix socket or TCP) is chosen automatically per OS.
 func (m *Manager) Start(ctx context.Context, sess *session.Session, binaryPath string) error {
-	// Allocate IPC address: Unix socket path on Unix/macOS, TCP loopback on Windows
+	// Allocate an OS-appropriate IPC address:
+	//   Unix/macOS → Unix domain socket path (/tmp/ida-worker-{id}.sock)
+	//   Windows    → TCP loopback address (127.0.0.1:{free-port})
 	addr, err := allocateWorkerAddr(sess.ID)
 	if err != nil {
 		return fmt.Errorf("failed to allocate worker address: %w", err)
 	}
-	sess.WorkerAddr = addr
+	sess.SocketPath = addr
 
 	// Remove any leftover socket file from a previous run (no-op on Windows)
 	cleanupWorkerAddr(addr)

@@ -12,7 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 
-import idapro
+import ida as idapro  # IDA Pro 9.0 idalib package is named 'ida'; alias as 'idapro' for forward compat
 
 from errors import IDAError
 
@@ -63,7 +63,7 @@ class IDAWrapper:
                 logging.warning("idapro.enable_console_messages not available in this IDA version")
 
             # Open database with compression
-            result = idapro.open_database(self.binary_path, auto_analyze, "-P+")
+            result = idapro.open_database(self.binary_path, auto_analyze)
 
             if result != 0:
                 error_msgs = {
@@ -110,7 +110,7 @@ class IDAWrapper:
                     else:
                         logging.info("No existing database files found, creating fresh database...")
 
-                    result = idapro.open_database(self.binary_path, True, "-P+")
+                    result = idapro.open_database(self.binary_path, True)
 
                     if result != 0:
                         final_error = error_msgs.get(result, f'Error code {result}')
