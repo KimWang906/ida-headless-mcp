@@ -1,6 +1,7 @@
 # Build artifacts
 .gocache/
 bin/
+result
 
 # Python
 *.pyc
@@ -28,6 +29,7 @@ databases/sessions/
 # OS
 .DS_Store
 Thumbs.db
+.direnv/
 
 # IDA database files (keep sample .i64 for tests)
 *.i64

@@ -12,10 +12,25 @@ import logging
 import os
 import socket
 import sys
+import types
 from pathlib import Path
 
-# Add proto path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / "proto"))
+# ── Protobuf generated code lives in gen/ ────────────────────────────────────
+# Pre-register ida.worker.* into sys.modules BEFORE importing the IDA Pro 'ida'
+# package.  Without this, 'import ida as idapro' fills sys.modules['ida'] with
+# the IDA Pro package, and subsequent 'from ida.worker.v1 import ...' fails
+# because the IDA Pro 'ida' package has no 'worker' sub-package.
+_gen_dir = Path(__file__).parent / "gen"
+sys.path.insert(0, str(_gen_dir))
+
+for _mod_name, _rel in [
+    ("ida.worker",    "ida/worker"),
+    ("ida.worker.v1", "ida/worker/v1"),
+]:
+    _m = types.ModuleType(_mod_name)
+    _m.__path__ = [str(_gen_dir / _rel)]
+    _m.__package__ = _mod_name
+    sys.modules.setdefault(_mod_name, _m)
 
 try:
     import ida as idapro  # IDA Pro 9.0 idalib: package is 'ida', alias as 'idapro' for compat

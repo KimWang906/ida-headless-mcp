@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +91,11 @@ func (m *Manager) Start(ctx context.Context, sess *session.Session, binaryPath s
 	cmdArgs := append([]string{m.pythonScript}, workerArgs(addr)...)
 	cmdArgs = append(cmdArgs, "--binary", binaryPath, "--session-id", sess.ID)
 	cmd := exec.CommandContext(workerCtx, findPython(), cmdArgs...)
+
+	// Inherit the current environment and prepend the generated protobuf
+	// directory (gen/) to PYTHONPATH so the worker can import ida.worker.v1.
+	genDir := filepath.Join(filepath.Dir(m.pythonScript), "gen")
+	cmd.Env = prependPythonPath(os.Environ(), genDir)
 
 	// In tests, discard output to prevent "Test I/O incomplete" errors
 	if flag.Lookup("test.v") != nil {
@@ -207,6 +214,25 @@ func (m *Manager) Stop(sessionID string) error {
 		return fmt.Errorf("failed to kill worker: %w", killErr)
 	}
 	return nil
+}
+
+// prependPythonPath returns a copy of env with dir prepended to PYTHONPATH.
+func prependPythonPath(env []string, dir string) []string {
+	const key = "PYTHONPATH="
+	result := make([]string, 0, len(env)+1)
+	found := false
+	for _, e := range env {
+		if strings.HasPrefix(e, key) {
+			result = append(result, key+dir+string(os.PathListSeparator)+e[len(key):])
+			found = true
+		} else {
+			result = append(result, e)
+		}
+	}
+	if !found {
+		result = append(result, key+dir)
+	}
+	return result
 }
 
 // GetClient returns the Connect RPC clients for a session
