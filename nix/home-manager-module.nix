@@ -64,13 +64,13 @@ in {
 
     pythonPackage = lib.mkOption {
       type        = lib.types.package;
-      default     = pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf ]);
       defaultText = lib.literalExpression
-        "pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf ])";
+        "pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf <ida-pkg> ])";
       description = ''
         Python interpreter used to run the worker process.
-        Must include grpcio and protobuf; IDA bindings are resolved at
-        runtime via PYTHONPATH pointing into idaInstallDir.
+        Defaults to python3 with grpcio, protobuf, and the ida idalib
+        bindings built from idaInstallDir (requires --impure evaluation).
+        Override to supply a pre-built environment.
       '';
     };
 
@@ -82,6 +82,23 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Build the default pythonPackage here so it can reference cfg.idaInstallDir.
+    # Uses idapro-python.nix to create a proper Nix derivation for the ida idalib
+    # Python bindings (creates the ida/bin symlink inside the Nix store).
+    # Requires --impure evaluation because builtins.path reads outside the store.
+    services.ida-headless-mcp.pythonPackage = lib.mkDefault (
+      let
+        idaDir       = cfg.idaInstallDir;
+        hasIdaLib    = builtins.pathExists "${idaDir}/idalib/python";
+        idaPkg       = pkgs.python3.pkgs.callPackage
+                         "${self.outPath}/nix/idapro-python.nix"
+                         { idaDir = idaDir; };
+      in
+      pkgs.python3.withPackages (ps:
+        [ ps.grpcio ps.protobuf ]
+        ++ lib.optionals hasIdaLib [ idaPkg ])
+    );
+
     systemd.user.services.ida-headless-mcp = {
       Unit = {
         Description = "IDA Headless MCP Server";
