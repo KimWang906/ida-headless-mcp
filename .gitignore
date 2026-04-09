@@ -22,6 +22,9 @@ build/
 # Session state
 databases/sessions/
 
+# Log files
+logs/
+
 # IDE
 .vscode/
 .idea/
