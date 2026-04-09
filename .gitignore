@@ -3,6 +3,9 @@
 bin/
 result
 
+# Go vendor directory (use go mod download instead)
+vendor/
+
 # Python
 *.pyc
 __pycache__/

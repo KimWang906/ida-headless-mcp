@@ -18,7 +18,7 @@ buildGoModule {
   # Vendored dependency hash.
   # Regenerate after any go.mod / go.sum change:
   #   go mod vendor && nix hash path --sri vendor
-  vendorHash = "sha256-0nSdtEXImczGGQA8Lj0YQogK4R5li4wjikMg3oTFukE=";
+  vendorHash = "sha256-NV+CAe5sJ42l48CoHnmnxtP3LR29ADBV0jqa5XUd2A8=";
 
   subPackages = [ "cmd/ida-mcp-server" ];
 
