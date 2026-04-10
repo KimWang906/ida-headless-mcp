@@ -64,13 +64,14 @@ in {
 
     pythonPackage = lib.mkOption {
       type        = lib.types.package;
+      default     = pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf ]);
       defaultText = lib.literalExpression
-        "pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf <ida-pkg> ])";
+        "pkgs.python3.withPackages (ps: [ ps.grpcio ps.protobuf ])";
       description = ''
         Python interpreter used to run the worker process.
-        Defaults to python3 with grpcio, protobuf, and the ida idalib
-        bindings built from idaInstallDir (requires --impure evaluation).
-        Override to supply a pre-built environment.
+        Must include grpcio and protobuf.  The ida idalib Python bindings are
+        wired up at activation time (home.activation.setupIdaBindings) by
+        installing a thin shim into user site-packages — no --impure needed.
       '';
     };
 
@@ -82,22 +83,36 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    # Build the default pythonPackage here so it can reference cfg.idaInstallDir.
-    # Uses idapro-python.nix to create a proper Nix derivation for the ida idalib
-    # Python bindings (creates the ida/bin symlink inside the Nix store).
-    # Requires --impure evaluation because builtins.path reads outside the store.
-    services.ida-headless-mcp.pythonPackage = lib.mkDefault (
-      let
-        idaDir       = cfg.idaInstallDir;
-        hasIdaLib    = builtins.pathExists "${idaDir}/idalib/python";
-        idaPkg       = pkgs.python3.pkgs.callPackage
-                         "${self.outPath}/nix/idapro-python.nix"
-                         { idaDir = idaDir; };
-      in
-      pkgs.python3.withPackages (ps:
-        [ ps.grpcio ps.protobuf ]
-        ++ lib.optionals hasIdaLib [ idaPkg ])
-    );
+    # Wire up the IDA Pro Python bindings at activation time.
+    #
+    # ida/__init__.py (shipped inside IDA's idalib/python/) looks for a "bin"
+    # symlink inside the *installed* ida package directory (first user
+    # site-packages, then sys site-packages).  We satisfy this by:
+    #
+    #   1. Copying the ida/ package tree from idalib/python/ into the user
+    #      site-packages directory of the service Python interpreter.
+    #   2. Creating/updating the "bin" symlink → idaInstallDir there.
+    #
+    # This runs on every `home-manager switch` (pure, no --impure needed)
+    # and is idempotent.
+    home.activation.setupIdaBindings = lib.hm.dag.entryAfter [ "installPackages" ] ''
+      _ida_src="${cfg.idaInstallDir}/idalib/python/ida"
+      _python="${cfg.pythonPackage}/bin/python3"
+
+      if [ -d "$_ida_src" ] && [ -x "$_python" ]; then
+        _user_site=$("$_python" -c "import site; print(site.getusersitepackages())")
+        _dest="$_user_site/ida"
+
+        # Copy ida package tree if __init__.py is missing or stale
+        if [ ! -f "$_dest/__init__.py" ]; then
+          $DRY_RUN_CMD mkdir -p "$_dest"
+          $DRY_RUN_CMD cp -r "$_ida_src/." "$_dest/"
+        fi
+
+        # Always (re)create the bin symlink so it tracks idaInstallDir
+        $DRY_RUN_CMD ln -sfn "${cfg.idaInstallDir}" "$_dest/bin"
+      fi
+    '';
 
     systemd.user.services.ida-headless-mcp = {
       Unit = {
